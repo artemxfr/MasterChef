@@ -600,12 +600,6 @@ contract MasterChef is Ownable, ReentrancyGuard {
     struct UserInfo {
         uint256 amount;
         uint256 rewardDebt;
-        uint256 initialAmount;
-
-        uint256 unlockTime;
-        uint256 withdrawablePerTime;
-        uint256 withdrawTX;
-        uint256 underclaimed;
     }
 
     // Info of each pool.
@@ -618,12 +612,6 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint256 startBlock;
         uint256 endBlock;
         uint256 rewarded;
-
-        bool lockEnabled;
-        uint256 vestingTime;
-        uint256 unlockPeriod;
-        uint256 vestingPeriods;
-        uint256 lastDepositBlock;
     }
 
     uint256 private constant ACC_TOKEN_PRECISION = 1e18;
@@ -646,8 +634,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
     event HarvestAndRestake(address indexed user, uint256 indexed pid, uint256 amount);
     event EmergencyStop(address indexed user, address to);
     event Add(uint256 rewardForEachBlock, IERC20 lpToken, bool withUpdate,
-        uint256 startBlock, uint256 endBlock, bool LockEnabled, bool withTokenTransfer);
-    event SetPoolInfo(uint256 pid, uint256 rewardsOneBlock, bool withUpdate, uint256 startBlock, uint256 endBlock, bool lockEnabled);
+        uint256 startBlock, uint256 endBlock, bool withTokenTransfer);
+    event SetPoolInfo(uint256 pid, uint256 rewardsOneBlock, bool withUpdate, uint256 startBlock, uint256 endBlock);
     event ClosePool(uint256 pid, address payable to);
 
     event AddRewardForPool(uint256 pid, uint256 addTokenPerBlock, bool withTokenTransfer);
@@ -670,7 +658,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     // Add a new lp to the pool. Can only be called by the owner.
     // Zero lpToken represents HT pool.
     function add(uint256 _totalReward, IERC20 _lpToken, bool _withUpdate,
-        uint256 _startBlock, uint256 _endBlock, bool _lockEnabled, uint256 _vestingTime, uint256 _unlockPeriod, uint256 _vestingPeriods, bool _withTokenTransfer) external onlyOwner {
+        uint256 _startBlock, uint256 _endBlock, bool _withTokenTransfer) external onlyOwner {
         //require(_lpToken != IERC20(ZERO), "lpToken can not be zero!");
         require(_totalReward > ZERO, "rewardForEachBlock must be greater than zero!");
         require(_startBlock < _endBlock, "start block must less than end block!");
@@ -678,10 +666,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
             massUpdatePools();
         }
         uint256 _rewardForEachBlock = _totalReward.div(_endBlock.sub(_startBlock));
-        uint256 _lastDepositBlock;
-        if (_lockEnabled) {
-            _lastDepositBlock = _endBlock.sub(_vestingTime.div(3).add(_unlockPeriod.mul(50).div(3)));
-        }
+
         poolInfo.push(PoolInfo({
             lpToken : _lpToken,
             amount : ZERO,
@@ -690,22 +675,17 @@ contract MasterChef is Ownable, ReentrancyGuard {
             accTokenPerShare : ZERO,
             startBlock : _startBlock,
             endBlock : _endBlock,
-            rewarded : ZERO,
-            lockEnabled: _lockEnabled,
-            vestingTime: _vestingTime,
-            unlockPeriod: _unlockPeriod,
-            vestingPeriods: _vestingPeriods,
-            lastDepositBlock: _lastDepositBlock
+            rewarded : ZERO
         }));
         if (_withTokenTransfer) {
             uint256 amount = (_endBlock - (block.number > _startBlock ? block.number : _startBlock)).mul(_rewardForEachBlock);
             token.safeTransferFrom(msg.sender, address(this), amount);
         }
-        emit Add(_rewardForEachBlock, _lpToken, _withUpdate, _startBlock, _endBlock, _lockEnabled, _withTokenTransfer);
+        emit Add(_rewardForEachBlock, _lpToken, _withUpdate, _startBlock, _endBlock, _withTokenTransfer);
     }
 
     // Update the given pool's pool info. Can only be called by the owner. 
-    function setPoolInfo(uint256 _pid, uint256 _rewardForEachBlock, bool _withUpdate, uint256 _startBlock, uint256 _endBlock, bool _lockEnabled, uint256 _vestingTime, uint256 _unlockPeriod) external validatePoolByPid(_pid) onlyOwner {
+    function setPoolInfo(uint256 _pid, uint256 _rewardForEachBlock, bool _withUpdate, uint256 _startBlock, uint256 _endBlock) external validatePoolByPid(_pid) onlyOwner {
         if (_withUpdate) {
             massUpdatePools();
         }
@@ -727,13 +707,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         if (_rewardForEachBlock > ZERO) {
             pool.rewardForEachBlock = _rewardForEachBlock;
         }
-        pool.lockEnabled = _lockEnabled;
-        if (_lockEnabled) {
-            pool.vestingTime = _vestingTime;
-            pool.unlockPeriod = _unlockPeriod;
-            pool.lastDepositBlock = _endBlock.sub(_vestingTime.div(3).add(_unlockPeriod.mul(50).div(3)));
-        }
-        emit SetPoolInfo(_pid, _rewardForEachBlock, _withUpdate, _startBlock, _endBlock, _lockEnabled);
+        emit SetPoolInfo(_pid, _rewardForEachBlock, _withUpdate, _startBlock, _endBlock);
     }
 
     // Return reward multiplier over the given _from to _to block.
@@ -818,9 +792,6 @@ contract MasterChef is Ownable, ReentrancyGuard {
         if (pool.lpToken == IERC20(address(0))) {
             require(_amount == msg.value, "msg.value must be equals to amount!");
         }
-        if (pool.lockEnabled) {
-            require(block.number < pool.lastDepositBlock);
-        }
         UserInfo storage user = userInfo[_pid][msg.sender];
         harvest(_pid, msg.sender);
         if (pool.lpToken != IERC20(address(0))) {
@@ -828,13 +799,6 @@ contract MasterChef is Ownable, ReentrancyGuard {
         }
         pool.amount = pool.amount.add(_amount);
         user.amount = user.amount.add(_amount);
-        user.initialAmount = user.amount;
-        if (pool.lockEnabled) {
-            user.unlockTime = block.timestamp + pool.vestingTime;
-            user.withdrawTX = 0;
-            user.withdrawablePerTime = user.amount.div(pool.vestingPeriods);
-            user.underclaimed = 0;
-        }
         user.rewardDebt = user.amount.mul(pool.accTokenPerShare).div(ACC_TOKEN_PRECISION);
         emit Deposit(msg.sender, _pid, _amount);
     }
@@ -843,71 +807,16 @@ contract MasterChef is Ownable, ReentrancyGuard {
         return _token == address(0);
     }
 
-    function getClaimCycle(uint256 _pid, address _address) public view returns (uint256) {
-        PoolInfo storage pool = poolInfo[_pid];
-        require(pool.lockEnabled, "Vesting is disabled for this pool");
-        UserInfo storage user = userInfo[_pid][_address];
-        if (user.unlockTime > block.timestamp) {
-            return ZERO;
-        }
-        uint256 _timeShare = 1 + (block.timestamp.sub(user.unlockTime)).div(pool.unlockPeriod);
-        if (_timeShare >= pool.vestingPeriods) {
-            _timeShare = pool.vestingPeriods;
-        }
-        uint256 userWithdrawTX = user.withdrawTX;
-        if (userWithdrawTX > pool.vestingPeriods) {
-            userWithdrawTX = pool.vestingPeriods;
-        }
-        uint256 _userCyclesToClaim = _timeShare - userWithdrawTX;
-        return _userCyclesToClaim;
-    }
-
-    function getUserWithdrawableAmount(uint256 _pid, address _address) public view returns (uint256, uint256) {
-        PoolInfo storage pool = poolInfo[_pid];
-        require(pool.lockEnabled, "Vesting is disabled for this pool");
-        UserInfo storage user = userInfo[_pid][_address];
-        uint256 _userCyclesToClaim = getClaimCycle(_pid, _address);
-        uint256 _withdrawableAmount;
-        _withdrawableAmount = _userCyclesToClaim.mul(user.withdrawablePerTime).add(user.underclaimed);
-        if (_withdrawableAmount > user.amount) {
-            _withdrawableAmount = user.amount;
-        }
-        if (_userCyclesToClaim == ZERO) {
-            _withdrawableAmount = user.underclaimed;
-        }
-        return (_withdrawableAmount, _userCyclesToClaim);
-    }
-
     // Withdraw LP tokens from MasterChef.
     function withdraw(uint256 _pid, uint256 _amount) external validatePoolByPid(_pid) payable {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         require(block.number >= pool.startBlock, "this pool has not started!");
         require(user.amount >= _amount, "withdraw: not good");
-        if (pool.lockEnabled) {
-            require(user.unlockTime <= block.timestamp);
-            (uint256 _maxWithdrawable, uint256 _userCyclesToClaim) = getUserWithdrawableAmount(_pid, msg.sender);
-            require(_maxWithdrawable > ZERO);
-            require(_amount <= _maxWithdrawable, "Withdraw: Not unlocked yet");
-            
-            // if (_amount != _maxWithdrawable) {
-            //     uint256 _temprealClaimCycle = _realClaimCycle.add(1);
-            //     uint256 _diffInAmounts = (_temprealClaimCycle.mul(user.withdrawablePerTime)).sub(_amount);
-            //     if (_maxWithdrawable == 0) {
-            //         _diffInAmounts = user.underclaimed.sub(_amount);
-            //     }
-            //     // user.underclaimed = _diffInAmounts;
-            // }
-            if (_userCyclesToClaim != 0) {
-                    user.withdrawTX += _userCyclesToClaim;
-            }
-        }
         harvest(_pid, msg.sender);
         user.amount = user.amount.sub(_amount);
         user.rewardDebt = user.amount.mul(pool.accTokenPerShare).div(ACC_TOKEN_PRECISION);
         pool.amount = pool.amount.sub(_amount);
-
-        user.underclaimed = user.amount.sub(user.initialAmount.sub(user.withdrawablePerTime.mul(user.withdrawTX)));
 
         if (pool.lpToken != IERC20(address(0))) {
             pool.lpToken.safeTransfer(msg.sender, _amount);
