@@ -884,24 +884,24 @@ contract MasterChef is Ownable, ReentrancyGuard {
         }
     }
 
-    // Add reward for pool from the current block or start block
-    function addRewardForPool(uint256 _pid, uint256 _addTokenPerBlock, bool _withTokenTransfer) external validatePoolByPid(_pid) onlyOwner {
-        require(_addTokenPerBlock > ZERO, "add token must be greater than zero!");
+    function addRewardForPool(uint256 _pid, uint256 _addTotalTokens, bool _withTokenTransfer) external validatePoolByPid(_pid) onlyOwner {
+        require(_addTotalTokens > ZERO, "add token must be greater than zero!");
         PoolInfo storage pool = poolInfo[_pid];
         require(block.number < pool.endBlock, "this pool has ended!");
         updatePool(_pid);
 
         uint256 addTokenPerBlock;
         if (block.number < pool.startBlock) {
-            addTokenPerBlock = _addTokenPerBlock.div(pool.endBlock.sub(pool.startBlock));
+            addTokenPerBlock = _addTotalTokens.div(pool.endBlock.sub(pool.startBlock));
         } else {
-            addTokenPerBlock = _addTokenPerBlock.div(pool.endBlock.sub(block.timestamp));
+            addTokenPerBlock = _addTotalTokens.div(pool.endBlock.sub(block.timestamp));
         }
 
         pool.rewardForEachBlock = pool.rewardForEachBlock.add(addTokenPerBlock);
         if (_withTokenTransfer) {
-            token.safeTransferFrom(msg.sender, address(this), _addTokenPerBlock);
+            token.safeTransferFrom(msg.sender, address(this), _addTotalTokens);
         }
-        emit AddRewardForPool(_pid, _addTokenPerBlock, _withTokenTransfer);
+        emit AddRewardForPool(_pid, _addTotalTokens, _withTokenTransfer);
     }
+
 }
